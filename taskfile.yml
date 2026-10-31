@@ -1,0 +1,51 @@
+version: '3'
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  run:
+    desc: Run the application
+    cmds:
+      - go run . {{.CLI_ARGS}}
+    interactive: true
+
+  refresh:
+    desc: Refresh the latest activity from Strava and run the app
+    cmds:
+      - go run . --refresh {{.CLI_ARGS}}
+    interactive: true
+
+  cities:
+    desc: Download the offline GeoNames city dataset
+    cmds:
+      - curl --fail --location --output cities5000.zip https://download.geonames.org/export/dump/cities5000.zip
+      - curl --fail --location --output admin1CodesASCII.txt https://download.geonames.org/export/dump/admin1CodesASCII.txt
+
+  build:
+    desc: Build the application
+    cmds:
+      - go build -o name-my-run .
+
+  fmt:
+    desc: Format Go code
+    cmds:
+      - gofmt -w .
+
+  vet:
+    desc: Check Go code
+    cmds:
+      - go vet ./...
+
+  test:
+    desc: Run Go tests
+    cmds:
+      - go test ./...
+
+  check:
+    desc: Run checks
+    cmds:
+      - task: vet
+      - task: test
