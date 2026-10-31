@@ -1,5 +1,7 @@
 # Name My Run
 
+<img src="cli.png" alt="Name My Run terminal interface" width="600">
+
 A local terminal app for naming Strava runs with activity metrics at hand. It uses Go and Task.
 
 This app was developed with the help of OpenAI Codex.
