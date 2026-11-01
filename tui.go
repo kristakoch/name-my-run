@@ -19,6 +19,7 @@ var (
 	appTitleStyle = lipgloss.NewStyle().Foreground(stravaOrange).Bold(true)
 	labelStyle    = lipgloss.NewStyle().Foreground(muted).Bold(true)
 	currentStyle  = lipgloss.NewStyle().Foreground(muted)
+	titleStyle    = lipgloss.NewStyle().Foreground(muted).Bold(true)
 	linkStyle     = lipgloss.NewStyle().Foreground(stravaOrange)
 	suggestStyle  = lipgloss.NewStyle().Foreground(stravaOrange).Bold(true).Padding(0, 1)
 	cardStyle     = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(stravaOrange).Padding(1, 2)
@@ -45,6 +46,11 @@ type weatherMsg struct {
 	weather *weather
 }
 
+type olderRunsMsg struct {
+	count int
+	err   error
+}
+
 type resultMsg struct {
 	original, title, message string
 	err                      error
@@ -66,6 +72,7 @@ type model struct {
 	width    int
 	notice   string
 	skipped  map[int64]bool
+	askOlder bool
 }
 
 func (m model) Init() tea.Cmd {
@@ -93,10 +100,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.detail == nil {
 			m.loading = false
-			m.result.message = "No recent activities have a default title."
-			if m.notice != "" {
-				m.result.message = m.notice + "\n\n" + m.result.message
+			if len(msg.history) > 0 {
+				m.askOlder = true
+				m.editing = false
+				return m, nil
 			}
+			m.result.message = "No runs found."
 			return m, tea.Quit
 		}
 		m.detail = *msg.detail
@@ -112,6 +121,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return weatherMsg{id: detail.ID, weather: forecast}
 			}
 		}
+	case olderRunsMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.warning = msg.err.Error()
+			m.askOlder = true
+			return m, nil
+		}
+		if msg.count == 0 {
+			m.result.message = "No older runs found."
+			return m, tea.Quit
+		}
+		m.notice = fmt.Sprintf("Loaded %d older runs.", msg.count)
+		m.loading = true
+		m.stage = "Finding the next activity…"
+		m.refresh = false
+		return m, m.Init()
 	case weatherMsg:
 		if msg.id != m.detail.ID || msg.weather == nil || m.loading {
 			return m, nil
@@ -143,6 +168,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh = false
 		return m, m.Init()
 	case tea.KeyMsg:
+		if m.askOlder {
+			switch msg.String() {
+			case "y", "Y":
+				m.askOlder, m.loading, m.warning = false, true, ""
+				m.stage = "Loading older runs…"
+				ctx := m.ctx
+				return m, func() tea.Msg {
+					count, err := loadOlderRuns(ctx, &http.Client{Timeout: 30 * time.Second})
+					return olderRunsMsg{count: count, err: err}
+				}
+			case "n", "N", "q", "esc", "ctrl+c":
+				m.decision = "Finished for now."
+				return m, tea.Quit
+			}
+			return m, nil
+		}
 		if m.editing {
 			return m.updateEditor(msg)
 		}
@@ -248,6 +289,25 @@ func (m model) View() string {
 	if m.decision != "" {
 		return appScreen(successStyle.Render("✓ " + m.decision))
 	}
+	if m.askOlder {
+		warning := ""
+		if m.warning != "" {
+			warning = warningStyle.Render(m.warning) + "\n\n"
+		}
+		notice := ""
+		if m.notice != "" {
+			notice = successStyle.Render(m.notice) + "\n\n"
+		}
+		return appScreen(notice + warning + "No more loaded runs with default names.\n\nLoad the next 50 older runs?\n\n" + keyboardHint("y", "load more") + "  " + keyboardHint("n", "finish"))
+	}
+	metrics, secondColumn := activityMetricsLayout(m.detail, m.history, m.width)
+	heading := "ACTIVITY"
+	for i, run := range m.history {
+		if run.ID == m.detail.ID {
+			heading += fmt.Sprintf("  %d/%d", i+1, len(m.history))
+			break
+		}
+	}
 	if m.editing {
 		warning := ""
 		if m.warning != "" {
@@ -257,47 +317,86 @@ func (m model) View() string {
 		if m.notice != "" {
 			notice = successStyle.Render("✓ "+m.notice) + "\n\n"
 		}
-		return appScreen(notice + warning + labelStyle.Render("ACTIVITY TO NAME") + "\n\n" + activityInformation(m.detail, m.result.original, m.width) + "\n\n" + cardStyle.Render(labelStyle.Render("NEW NAME")+"\n"+largeTitle(m.manual, m.width)) + "\n\n" + activityMetrics(m.detail, m.width) + m.standoutsView() + "\n\n" + keyboardHint("enter", "update activity") + "  " + keyboardHint("ctrl+s", "skip") + "  " + keyboardHint("esc", "quit"))
+		return appScreen(notice + warning + labelStyle.Render(heading) + "\n" + activityInformation(m.detail, m.result.original, m.width, secondColumn) + "\n\n" + cardStyle.Render(labelStyle.Render("NEW NAME")+"\n"+largeTitle(m.manual, m.width)) + "\n\n" + metrics + "\n\n" + keyboardHint("enter", "update activity") + "  " + keyboardHint("ctrl+s", "skip") + "  " + keyboardHint("esc", "quit"))
 	}
 	warning := ""
 	if m.warning != "" {
 		warning = warningStyle.Render(m.warning) + "\n\n"
 	}
-	metrics := activityMetrics(m.detail, m.width)
-	activityInfo := activityInformation(m.detail, m.result.original, m.width)
+	activityInfo := activityInformation(m.detail, m.result.original, m.width, secondColumn)
 	cardLabel := "NEW NAME"
 	cardText := m.result.title
 	controls := keyboardHint("y", "approve & update") + "  " + keyboardHint("n", "skip") + "  " + keyboardHint("e", "edit") + "  " + keyboardHint("q", "quit")
 	content := lipgloss.JoinVertical(lipgloss.Left,
-		warning+labelStyle.Render("ACTIVITY TO NAME"),
-		"",
+		warning+labelStyle.Render(heading),
 		activityInfo,
 		"",
 		cardStyle.Render(labelStyle.Render(cardLabel)+"\n"+suggestStyle.Render(cardText)),
 		"",
-		metrics+m.standoutsView(),
+		metrics,
 		"",
 		controls,
 	)
 	return appScreen(content)
 }
 
-func activityInformation(detail activity, original string, width int) string {
-	activityInfo := strings.TrimSuffix(activityWhen(detail), "\n")
-	if activityInfo != "" {
-		activityInfo += "\n"
+func activityInformation(detail activity, original string, width, secondColumn int) string {
+	if width <= 0 {
+		width = 80
 	}
-	activityInfo += currentStyle.Render(original)
-	if description := strings.TrimSpace(detail.Description); description != "" {
-		if width <= 0 {
-			width = 80
+	when := strings.TrimSuffix(activityWhen(detail), "\n")
+	location := activityLocation(detail)
+	activityInfo := titleStyle.Render(original)
+	rightWidth := max(lipgloss.Width(when), lipgloss.Width(location))
+	description := strings.TrimSpace(detail.Description)
+	if rightWidth > 0 && secondColumn > 0 && lipgloss.Width(original)+2 <= secondColumn && secondColumn+rightWidth <= width {
+		leftWidth := secondColumn
+		activityInfo = lipgloss.NewStyle().Width(leftWidth).Render(activityInfo) + when
+		if location != "" {
+			firstLine := ""
+			if description != "" {
+				wrapped := strings.Split(lipgloss.NewStyle().Width(leftWidth-2).Render(description), "\n")
+				firstLine = wrapped[0]
+				description = strings.Join(wrapped[1:], "\n")
+			}
+			activityInfo += "\n" + lipgloss.NewStyle().Width(leftWidth).Render(firstLine) + location
 		}
+	} else {
+		if when != "" {
+			activityInfo += "\n" + when
+		}
+		if location != "" {
+			activityInfo += "\n" + location
+		}
+	}
+	if description != "" {
 		activityInfo += "\n" + lipgloss.NewStyle().Width(width).Render(description)
 	}
 	if detail.ID > 0 {
 		activityInfo += "\n" + linkStyle.Render(fmt.Sprintf("View on Strava: https://www.strava.com/activities/%d", detail.ID))
 	}
 	return activityInfo
+}
+
+func activityLocation(a activity) string {
+	var parts []string
+	if a.City == "" && a.NearbyCity != "" {
+		for _, part := range []string{a.NearbyCity, stateAbbreviation(a.NearbyState, a.NearbyCountry), a.NearbyCountry} {
+			if strings.TrimSpace(part) != "" {
+				parts = append(parts, strings.TrimSpace(part))
+			}
+		}
+		return labelStyle.Render("IN") + " " + strings.Join(parts, ", ")
+	}
+	for _, part := range []string{a.City, stateAbbreviation(a.State, a.Country), a.Country} {
+		if strings.TrimSpace(part) != "" {
+			parts = append(parts, strings.TrimSpace(part))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return labelStyle.Render("IN") + " " + strings.Join(parts, ", ")
 }
 
 // Terminals use fixed-size character cells, so render a compact block preview.
@@ -387,51 +486,30 @@ func largeTitle(title string, width int) string {
 	return lipgloss.NewStyle().Foreground(stravaOrange).Bold(true).Render(compact[0].String() + "\n" + compact[1].String() + "\n" + compact[2].String())
 }
 
-func (m model) standoutsView() string {
-	standouts := personalStandouts(m.detail, m.history)
-	if len(standouts) == 0 {
-		return ""
-	}
-	return "\n\n" + labelStyle.Render("COMPARED WITH YOUR RECENT RUNS") + "\n" + strings.Join(standouts, "\n")
-}
-
 func activityWhen(a activity) string {
 	if start, err := time.Parse(time.RFC3339, a.Start); err == nil {
-		return start.Format("Monday, Jan 2, 2006  3:04 PM") + "\n"
+		return labelStyle.Render("ON") + " " + start.Format("Monday, Jan 2, 2006  3:04 PM") + "\n"
 	}
 	return ""
 }
 
-func activityMetrics(a activity, width int) string {
+func activityMetrics(a activity, history []activity, width int) string {
+	metrics, _ := activityMetricsLayout(a, history, width)
+	return metrics
+}
+
+func activityMetricsLayout(a activity, history []activity, width int) (string, int) {
 	type entry struct {
-		label, value string
+		label, value, change string
 	}
 	var items []entry
 	var weatherItems []entry
 	add := func(label, value string) { items = append(items, entry{label: label, value: value}) }
 	addWeather := func(label, value string) { weatherItems = append(weatherItems, entry{label: label, value: value}) }
 	var averageHR, maximumHR, relativeEffort, averagePower *entry
-	var location []string
-	for _, part := range []string{a.City, stateAbbreviation(a.State, a.Country), a.Country} {
-		if strings.TrimSpace(part) != "" {
-			location = append(location, strings.TrimSpace(part))
-		}
-	}
-	if a.City == "" && a.NearbyCity != "" {
-		parts := []string{a.NearbyCity}
-		if a.NearbyState != "" {
-			parts = append(parts, stateAbbreviation(a.NearbyState, a.NearbyCountry))
-		}
-		if a.NearbyCountry != "" {
-			parts = append(parts, a.NearbyCountry)
-		}
-		add("NEAR", strings.Join(parts, ", "))
-	} else if len(location) > 0 {
-		add("LOCATION", strings.Join(location, ", "))
-	}
-	add("DISTANCE", fmt.Sprintf("%.1f km", a.Distance/1000))
+	add("DISTANCE", fmt.Sprintf("%.2f mi", a.Distance/1609.344))
 	add("MOVING", fmt.Sprintf("%d:%02d", a.MovingTime/60, a.MovingTime%60))
-	add("ELEVATION", fmt.Sprintf("%.0f m", a.Elevation))
+	add("ELEVATION", fmt.Sprintf("%.0f ft", a.Elevation*3.28084))
 	if a.AverageSpeed != nil && *a.AverageSpeed > 0 {
 		seconds := int(1609.344 / *a.AverageSpeed + 0.5)
 		add("AVG PACE", fmt.Sprintf("%d:%02d /mi", seconds/60, seconds%60))
@@ -468,7 +546,7 @@ func activityMetrics(a activity, width int) string {
 			addWeather("WIND", fmt.Sprintf("%.0f mph", *a.Weather.Wind*0.621371))
 		}
 		if a.Weather.Precipitation != nil {
-			addWeather("PRECIPITATION", fmt.Sprintf("%.1f mm", *a.Weather.Precipitation))
+			addWeather("PRECIPITATION", fmt.Sprintf("%.2f in", *a.Weather.Precipitation/25.4))
 		}
 		if a.Weather.Code != nil {
 			if condition := weatherCondition(*a.Weather.Code); condition != "" {
@@ -482,15 +560,66 @@ func activityMetrics(a activity, width int) string {
 	if a.AverageWatts != nil {
 		averagePower = &entry{label: "AVG POWER", value: fmt.Sprintf("%.0f W", *a.AverageWatts)}
 	}
+	decorate := func(item *entry) {
+		if item == nil {
+			return
+		}
+		change, direction := metricDifference(a, history, item.label)
+		if direction == 0 {
+			return
+		}
+		arrow := "▲"
+		if (direction < 0) != (item.label == "AVG PACE") {
+			arrow = "▼"
+		}
+		color := lipgloss.Color("#65D68A")
+		if (direction < 0) != (item.label == "AVG PACE") {
+			color = lipgloss.Color("#FF7777")
+		}
+		item.change = lipgloss.NewStyle().Foreground(color).Render(arrow + " " + change)
+	}
+	for i := range items {
+		decorate(&items[i])
+	}
+	for _, item := range []*entry{averageHR, maximumHR, relativeEffort, averagePower} {
+		decorate(item)
+	}
 	if width <= 0 {
 		width = 80
 	}
 	// Use aligned columns and a separate line for the date so labels and values
 	// remain easy to scan even as optional metrics appear or disappear.
 	var lines []string
+	comparisonRuns := 0
+	for _, run := range history {
+		if run.ID != a.ID && (run.Sport == "Run" || run.Sport == "TrailRun" || run.Sport == "VirtualRun") {
+			comparisonRuns++
+		}
+	}
+	if comparisonRuns >= 5 {
+		lines = append(lines, labelStyle.Render(fmt.Sprintf("Compared with up to %d cached runs (varies by metric)", comparisonRuns)))
+	}
+	valueWidth := 0
+	for _, item := range items {
+		if item.change != "" && lipgloss.Width(item.value) > valueWidth {
+			valueWidth = lipgloss.Width(item.value)
+		}
+	}
+	for _, item := range []*entry{averageHR, maximumHR, relativeEffort, averagePower} {
+		if item != nil && item.change != "" && lipgloss.Width(item.value) > valueWidth {
+			valueWidth = lipgloss.Width(item.value)
+		}
+	}
+	cellText := func(item entry) string {
+		value := item.value
+		if item.change != "" {
+			value += strings.Repeat(" ", valueWidth-lipgloss.Width(item.value)+2) + item.change
+		}
+		return labelStyle.Render(fmt.Sprintf("%-15s", item.label)) + " " + value
+	}
 	columnWidth := 0
 	for _, item := range items {
-		if n := 16 + lipgloss.Width(item.value); n > columnWidth {
+		if n := lipgloss.Width(cellText(item)); n > columnWidth {
 			columnWidth = n
 		}
 	}
@@ -501,7 +630,7 @@ func activityMetrics(a activity, width int) string {
 	}
 	for _, item := range []*entry{averageHR, maximumHR, relativeEffort, averagePower} {
 		if item != nil {
-			n := 16 + lipgloss.Width(item.value)
+			n := lipgloss.Width(cellText(*item))
 			if n > columnWidth {
 				columnWidth = n
 			}
@@ -521,7 +650,7 @@ func activityMetrics(a activity, width int) string {
 		}
 		var row []string
 		for _, item := range items[i:end] {
-			text := labelStyle.Render(fmt.Sprintf("%-15s", item.label)) + " " + item.value
+			text := cellText(item)
 			row = append(row, lipgloss.NewStyle().Width(columnWidth+3).Render(text))
 		}
 		lines = append(lines, strings.Join(row, ""))
@@ -531,16 +660,25 @@ func activityMetrics(a activity, width int) string {
 		if item == nil {
 			return lipgloss.NewStyle().Width(columnWidth + 3).Render("")
 		}
-		text := labelStyle.Render(fmt.Sprintf("%-15s", item.label)) + " " + item.value
+		text := cellText(*item)
 		return lipgloss.NewStyle().Width(columnWidth + 3).Render(text)
 	}
-	if averageHR != nil || relativeEffort != nil {
-		lines = append(lines, metricCell(averageHR)+metricCell(relativeEffort))
-	}
-	if maximumHR != nil || averagePower != nil {
-		lines = append(lines, metricCell(maximumHR)+metricCell(averagePower))
+	if columns == 1 {
+		for _, item := range []*entry{averageHR, maximumHR, relativeEffort, averagePower} {
+			if item != nil {
+				lines = append(lines, metricCell(item))
+			}
+		}
+	} else {
+		if averageHR != nil || relativeEffort != nil {
+			lines = append(lines, metricCell(averageHR)+metricCell(relativeEffort))
+		}
+		if maximumHR != nil || averagePower != nil {
+			lines = append(lines, metricCell(maximumHR)+metricCell(averagePower))
+		}
 	}
 	if len(weatherItems) > 0 {
+		lines = append(lines, "")
 		for i := 0; i < len(weatherItems); i += columns {
 			end := min(i+columns, len(weatherItems))
 			var row []string
@@ -551,7 +689,11 @@ func activityMetrics(a activity, width int) string {
 			lines = append(lines, strings.Join(row, ""))
 		}
 	}
-	return strings.Join(lines, "\n")
+	secondColumn := 0
+	if columns > 1 {
+		secondColumn = columnWidth + 3
+	}
+	return strings.Join(lines, "\n"), secondColumn
 }
 
 func appScreen(content string) string {

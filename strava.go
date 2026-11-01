@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	activityLimit = 50
+	activityLimit = 100
 	stravaURL     = "https://www.strava.com/api/v3"
 )
 
@@ -43,8 +43,11 @@ func requestJSON(ctx context.Context, client *http.Client, method, endpoint, con
 
 func refreshAccessToken(ctx context.Context, client *http.Client, refreshToken string) (string, error) {
 	config := loadSettings()
-	if config.ClientID == "" || config.ClientSecret == "" || refreshToken == "" {
-		return "", fmt.Errorf("Account is not connected; follow the setup instructions in README.md")
+	if config.ClientID == "" || config.ClientSecret == "" {
+		return "", fmt.Errorf("saved app credentials are missing; set STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET as described in README.md")
+	}
+	if refreshToken == "" {
+		return "", fmt.Errorf("saved account token is missing; reconnect using the instructions in README.md")
 	}
 	values := url.Values{
 		"client_id": {config.ClientID}, "client_secret": {config.ClientSecret},
@@ -70,23 +73,81 @@ func refreshAccessToken(ctx context.Context, client *http.Client, refreshToken s
 func fetchActivities(ctx context.Context, client *http.Client) ([]activity, string, error) {
 	tokens := loadTokens()
 	token := tokens.Access
-	endpoint := fmt.Sprintf("%s/athlete/activities?page=1&per_page=%d", stravaURL, activityLimit)
 	var activities []activity
-	status, err := requestJSON(ctx, client, http.MethodGet, endpoint, "", token, nil, &activities)
-	if status == http.StatusUnauthorized {
-		token, err = refreshAccessToken(ctx, client, tokens.Refresh)
-		if err != nil {
-			return nil, "", err
-		}
-		status, err = requestJSON(ctx, client, http.MethodGet, endpoint, "", token, nil, &activities)
+	for page := 1; len(activities) < activityLimit; page++ {
+		endpoint := fmt.Sprintf("%s/athlete/activities?page=%d&per_page=100", stravaURL, page)
+		var batch []activity
+		status, err := requestJSON(ctx, client, http.MethodGet, endpoint, "", token, nil, &batch)
 		if status == http.StatusUnauthorized {
-			return nil, "", fmt.Errorf("Activity access denied; authorize activity:read_all as described in the instructions")
+			token, err = refreshAccessToken(ctx, client, tokens.Refresh)
+			if err != nil {
+				return nil, "", err
+			}
+			status, err = requestJSON(ctx, client, http.MethodGet, endpoint, "", token, nil, &batch)
+			if status == http.StatusUnauthorized {
+				return nil, "", fmt.Errorf("Activity access denied; authorize activity:read_all as described in the instructions")
+			}
 		}
-	}
-	if err != nil {
-		return nil, "", fmt.Errorf("fetch latest activity: %w", err)
+		if err != nil {
+			return nil, "", fmt.Errorf("fetch recent runs: %w", err)
+		}
+		for _, item := range batch {
+			if isRun(item) {
+				activities = append(activities, item)
+			}
+			if len(activities) == activityLimit {
+				break
+			}
+		}
+		if len(batch) < 100 {
+			break
+		}
 	}
 	return activities, token, nil
+}
+
+// Find the cached anchor in the live feed before collecting older runs. This
+// avoids offsets drifting when new activities arrive between requests.
+func fetchOlderRuns(ctx context.Context, client *http.Client, anchor int64) ([]activity, error) {
+	tokens := loadTokens()
+	token := tokens.Access
+	found := false
+	var runs []activity
+	for page := 1; ; page++ {
+		endpoint := fmt.Sprintf("%s/athlete/activities?page=%d&per_page=100", stravaURL, page)
+		var batch []activity
+		status, err := requestJSON(ctx, client, http.MethodGet, endpoint, "", token, nil, &batch)
+		if status == http.StatusUnauthorized {
+			token, err = refreshAccessToken(ctx, client, tokens.Refresh)
+			if err != nil {
+				return nil, err
+			}
+			_, err = requestJSON(ctx, client, http.MethodGet, endpoint, "", token, nil, &batch)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("load older runs: %w", err)
+		}
+		for _, item := range batch {
+			if !found {
+				if item.ID == anchor {
+					found = true
+				}
+				continue
+			}
+			if isRun(item) {
+				runs = append(runs, item)
+			}
+			if len(runs) == 50 {
+				return runs, nil
+			}
+		}
+		if len(batch) < 100 {
+			if !found {
+				return nil, fmt.Errorf("could not find the oldest cached run; run task refresh and try again")
+			}
+			return runs, nil
+		}
+	}
 }
 
 func fetchDetails(ctx context.Context, client *http.Client, id int64, token string) (activity, error) {

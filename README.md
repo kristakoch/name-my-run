@@ -39,7 +39,7 @@ This app was developed with the help of OpenAI Codex.
 
 ## Run
 
-Run `task run`. Use `task refresh` to fetch recent activities again. Type a title and press Enter to update the activity, Ctrl+S to skip it for this session, or Escape to quit.
+Run `task run`. Use `task refresh` to fetch up to your 100 most recent runs again. Type a title and press Enter to update the activity, Ctrl+S to skip it for this session, or Escape to quit. When no loaded runs remain to rename, the app asks whether to load up to 50 older runs.
 
 Activity data is cached in the Git-ignored `.strava-activities.json` file. Each person should use a separate working directory to avoid mixing accounts.
 

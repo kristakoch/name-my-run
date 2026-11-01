@@ -53,3 +53,7 @@ type activity struct {
 func isDefaultName(name string) bool {
 	return name == "Morning Run" || name == "Afternoon Run" || name == "Lunch Run"
 }
+
+func isRun(a activity) bool {
+	return a.Sport == "Run" || a.Sport == "TrailRun" || a.Sport == "VirtualRun"
+}

@@ -36,6 +36,32 @@ func TestLargeTitleSupportsDigitsAndApostrophes(t *testing.T) {
 	}
 }
 
+func TestMetricComparisonAlignment(t *testing.T) {
+	current := activity{ID: 1, Distance: 1609.344 * 4, MovingTime: 3000}
+	var history []activity
+	for i := 0; i < 5; i++ {
+		history = append(history, activity{ID: int64(i + 2), Sport: "Run", Distance: 1609.344 * 3, MovingTime: 2000})
+	}
+	var positions []int
+	for _, line := range strings.Split(activityMetrics(current, history, 40), "\n") {
+		if at := strings.Index(line, "▲"); at >= 0 {
+			positions = append(positions, at)
+		}
+	}
+	if len(positions) < 2 || positions[0] != positions[1] {
+		t.Fatalf("comparison arrows not aligned: %v", positions)
+	}
+}
+
+func TestActivityInformationAlignsWithMetrics(t *testing.T) {
+	a := activity{ID: 1, Name: "Morning Run", Start: "2025-01-01T09:00:00Z", NearbyCity: "Minneapolis", NearbyState: "Minnesota", NearbyCountry: "US", Distance: 5000, MovingTime: 1800}
+	_, column := activityMetricsLayout(a, nil, 100)
+	lines := strings.Split(activityInformation(a, a.Name, 100, column), "\n")
+	if column == 0 || len(lines) < 2 || strings.Index(lines[0], "ON ") != column || strings.Index(lines[1], "IN ") != column {
+		t.Fatalf("activity details do not align at column %d: %q", column, lines)
+	}
+}
+
 func TestSkipMovesOnWithoutChangingActivity(t *testing.T) {
 	m := model{detail: activity{ID: 42, Name: "Morning Run"}, editing: true, manual: "Draft"}
 	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
@@ -50,5 +76,19 @@ func TestUpdateDoesNotContinueAfterCacheFailure(t *testing.T) {
 	next, _ := m.Update(updateMsg{message: "Updated to Fresh Tracks, but could not save the cache. Run task refresh."})
 	if !strings.Contains(next.(model).decision, "could not save") {
 		t.Fatal("cache warning must remain visible")
+	}
+}
+
+func TestEndOfRunsPromptsBeforeLoading(t *testing.T) {
+	m := model{ctx: context.Background(), loading: true}
+	next, cmd := m.Update(activityMsg{history: []activity{{ID: 1, Name: "Custom"}}})
+	m = next.(model)
+	if !m.askOlder || m.loading || cmd != nil {
+		t.Fatal("expected a prompt without a network request")
+	}
+	next, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = next.(model)
+	if !m.loading || m.askOlder || cmd == nil {
+		t.Fatal("expected older-runs request after approval")
 	}
 }

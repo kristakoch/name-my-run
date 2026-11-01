@@ -17,6 +17,38 @@ type activityCache struct {
 
 const cacheFile = ".strava-activities.json"
 
+func loadOlderRuns(ctx context.Context, client *http.Client) (int, error) {
+	cache, err := loadActivityCache()
+	if err != nil {
+		return 0, err
+	}
+	if len(cache.Activities) == 0 {
+		return 0, nil
+	}
+	older, err := fetchOlderRuns(ctx, client, cache.Activities[len(cache.Activities)-1].ID)
+	if err != nil {
+		return 0, err
+	}
+	seen := make(map[int64]bool, len(cache.Activities))
+	for _, item := range cache.Activities {
+		seen[item.ID] = true
+	}
+	added := 0
+	for _, item := range older {
+		if !seen[item.ID] {
+			cache.Activities = append(cache.Activities, item)
+			seen[item.ID] = true
+			added++
+		}
+	}
+	if added > 0 {
+		if err := saveActivityCache(cache); err != nil {
+			return 0, err
+		}
+	}
+	return added, nil
+}
+
 func loadActivityCache() (activityCache, error) {
 	cache := activityCache{Details: make(map[int64]activity)}
 	data, err := os.ReadFile(cacheFile)
