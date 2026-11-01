@@ -39,7 +39,7 @@ func main() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	final, err := tea.NewProgram(model{ctx: ctx, cancel: cancel, loading: true, stage: "Loading recent activities…", refresh: *refresh}, tea.WithAltScreen()).Run()
+	final, err := tea.NewProgram(model{ctx: ctx, cancel: cancel, cursorVisible: true, loading: true, stage: "Loading recent activities…", refresh: *refresh}, tea.WithAltScreen()).Run()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

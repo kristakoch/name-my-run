@@ -56,26 +56,37 @@ type resultMsg struct {
 	err                      error
 }
 
+type cursorBlinkMsg struct{}
+
+func blinkCursor() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return cursorBlinkMsg{} })
+}
+
 type model struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	result   resultMsg
-	loading  bool
-	decision string
-	detail   activity
-	editing  bool
-	manual   string
-	warning  string
-	stage    string
-	refresh  bool
-	history  []activity
-	width    int
-	notice   string
-	skipped  map[int64]bool
-	askOlder bool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	result        resultMsg
+	loading       bool
+	decision      string
+	detail        activity
+	editing       bool
+	manual        string
+	warning       string
+	stage         string
+	refresh       bool
+	history       []activity
+	width         int
+	notice        string
+	skipped       map[int64]bool
+	askOlder      bool
+	cursorVisible bool
 }
 
 func (m model) Init() tea.Cmd {
+	return tea.Batch(m.loadActivity(), blinkCursor())
+}
+
+func (m model) loadActivity() tea.Cmd {
 	return func() tea.Msg {
 		client := &http.Client{Timeout: 30 * time.Second}
 		latest, err := nextDefaultActivity(m.ctx, client, m.refresh, m.skipped)
@@ -89,6 +100,9 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case cursorBlinkMsg:
+		m.cursorVisible = !m.cursorVisible
+		return m, blinkCursor()
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		return m, nil
@@ -136,7 +150,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		m.stage = "Finding the next activity…"
 		m.refresh = false
-		return m, m.Init()
+		return m, m.loadActivity()
 	case weatherMsg:
 		if msg.id != m.detail.ID || msg.weather == nil || m.loading {
 			return m, nil
@@ -166,7 +180,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		m.stage = "Loading next activity…"
 		m.refresh = false
-		return m, m.Init()
+		return m, m.loadActivity()
 	case tea.KeyMsg:
 		if m.askOlder {
 			switch msg.String() {
@@ -243,7 +257,7 @@ func (m model) updateEditor(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.stage = "Loading next activity…"
 		m.notice = "Skipped this activity for now."
 		m.warning = ""
-		return m, m.Init()
+		return m, m.loadActivity()
 	case tea.KeyBackspace, tea.KeyDelete:
 		r := []rune(m.manual)
 		if len(r) > 0 {
@@ -317,27 +331,38 @@ func (m model) View() string {
 		if m.notice != "" {
 			notice = successStyle.Render("✓ "+m.notice) + "\n\n"
 		}
-		return appScreen(notice + warning + labelStyle.Render(heading) + "\n" + activityInformation(m.detail, m.result.original, m.width, secondColumn) + "\n\n" + cardStyle.Render(labelStyle.Render("NEW NAME")+"\n"+largeTitle(m.manual, m.width)) + "\n\n" + metrics + "\n\n" + keyboardHint("enter", "update activity") + "  " + keyboardHint("ctrl+s", "skip") + "  " + keyboardHint("esc", "quit"))
+		return appScreen(notice + warning + labelStyle.Render(heading) + "\n" + activityInformation(m.detail, m.result.original, m.width, secondColumn) + "\n\n" + nameCard(m.manual, m.width, true, m.cursorVisible) + "\n\n" + metrics + "\n\n" + keyboardHint("enter", "update activity") + "  " + keyboardHint("ctrl+s", "skip") + "  " + keyboardHint("esc", "quit"))
 	}
 	warning := ""
 	if m.warning != "" {
 		warning = warningStyle.Render(m.warning) + "\n\n"
 	}
 	activityInfo := activityInformation(m.detail, m.result.original, m.width, secondColumn)
-	cardLabel := "NEW NAME"
 	cardText := m.result.title
 	controls := keyboardHint("y", "approve & update") + "  " + keyboardHint("n", "skip") + "  " + keyboardHint("e", "edit") + "  " + keyboardHint("q", "quit")
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		warning+labelStyle.Render(heading),
 		activityInfo,
 		"",
-		cardStyle.Render(labelStyle.Render(cardLabel)+"\n"+suggestStyle.Render(cardText)),
+		nameCard(cardText, m.width, false, false),
 		"",
 		metrics,
 		"",
 		controls,
 	)
 	return appScreen(content)
+}
+
+func nameCard(title string, terminalWidth int, editing, cursorVisible bool) string {
+	if terminalWidth <= 0 {
+		terminalWidth = 80
+	}
+	width := min(72, max(1, terminalWidth-2))
+	text := suggestStyle.Render(title)
+	if editing {
+		text = largeTitle(title, width, cursorVisible)
+	}
+	return cardStyle.Width(width).Render(labelStyle.Render("NEW NAME") + "\n" + text)
 }
 
 func activityInformation(detail activity, original string, width, secondColumn int) string {
@@ -401,7 +426,7 @@ func activityLocation(a activity) string {
 
 // Terminals use fixed-size character cells, so render a compact block preview.
 // Fall back to normal text when the block font cannot represent the title.
-func largeTitle(title string, width int) string {
+func largeTitle(title string, width int, cursorVisible bool) string {
 	font := map[rune][5]string{
 		'A': {" ██ ", "█  █", "████", "█  █", "█  █"}, 'B': {"███ ", "█  █", "███ ", "█  █", "███ "},
 		'C': {" ███", "█   ", "█   ", "█   ", " ███"}, 'D': {"███ ", "█  █", "█  █", "█  █", "███ "},
@@ -439,9 +464,13 @@ func largeTitle(title string, width int) string {
 		'.': {" ", " ", " ", " ", "█"}, ',': {" ", " ", " ", "█", "█"},
 		' ': {"  ", "  ", "  ", "  ", "  "},
 	}
-	preview := suggestStyle.Render(title+"_") + "\n \n "
+	cursor := " "
+	if cursorVisible {
+		cursor = "▏"
+	}
+	preview := suggestStyle.Render(title+cursor) + "\n \n "
 	if title == "" {
-		return preview
+		return lipgloss.NewStyle().Foreground(stravaOrange).Render(cursor + "\n" + cursor + "\n" + cursor)
 	}
 	var lines [5]string
 	for _, char := range title {
@@ -483,7 +512,7 @@ func largeTitle(title string, width int) string {
 			}
 		}
 	}
-	return lipgloss.NewStyle().Foreground(stravaOrange).Bold(true).Render(compact[0].String() + "\n" + compact[1].String() + "\n" + compact[2].String())
+	return lipgloss.NewStyle().Foreground(stravaOrange).Bold(true).Render(compact[0].String() + cursor + "\n" + compact[1].String() + cursor + "\n" + compact[2].String() + cursor)
 }
 
 func activityWhen(a activity) string {

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestUpdateMovesToNextActivity(t *testing.T) {
@@ -24,10 +25,20 @@ func TestUpdateMovesToNextActivity(t *testing.T) {
 	}
 }
 
+func TestNameCardStartsWideAndFitsTerminal(t *testing.T) {
+	for _, width := range []int{40, 80, 120} {
+		empty := lipgloss.Width(nameCard("", width, true, true))
+		typed := lipgloss.Width(nameCard("Morning", width, true, true))
+		if empty != typed || empty > width {
+			t.Fatalf("terminal %d: empty=%d typed=%d", width, empty, typed)
+		}
+	}
+}
+
 func TestLargeTitleSupportsDigitsAndApostrophes(t *testing.T) {
 	for _, title := range []string{"Runner's 5", "Run 0123456789", "It’s 5"} {
-		result := largeTitle(title, 120)
-		if strings.Contains(result, title+"_") {
+		result := largeTitle(title, 120, true)
+		if strings.Contains(result, title+"▏") {
 			t.Errorf("%q fell back to small text", title)
 		}
 		if got := strings.Count(result, "\n"); got != 2 {
@@ -90,5 +101,22 @@ func TestEndOfRunsPromptsBeforeLoading(t *testing.T) {
 	m = next.(model)
 	if !m.loading || m.askOlder || cmd == nil {
 		t.Fatal("expected older-runs request after approval")
+	}
+}
+
+func TestBlinkingCursorKeepsCardSize(t *testing.T) {
+	for _, title := range []string{"", "Morning", "☀"} {
+		visible := nameCard(title, 80, true, true)
+		hidden := nameCard(title, 80, true, false)
+		if !strings.Contains(visible, "▏") || strings.Contains(hidden, "▏") {
+			t.Errorf("cursor visibility incorrect for %q", title)
+		}
+		if lipgloss.Width(visible) != lipgloss.Width(hidden) || lipgloss.Height(visible) != lipgloss.Height(hidden) {
+			t.Errorf("card dimensions change when cursor blinks for %q", title)
+		}
+	}
+	next, cmd := (model{}).Update(cursorBlinkMsg{})
+	if !next.(model).cursorVisible || cmd == nil {
+		t.Fatal("cursor should toggle and schedule the next blink")
 	}
 }
