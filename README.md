@@ -2,7 +2,9 @@
 
 <img src="cli.png" alt="Name My Run terminal interface" width="600">
 
-A local terminal app for naming Strava runs with activity metrics at hand. It uses Go and Task.
+A local terminal app for naming Strava runs with activity metrics at hand. It uses Go and Task. I wanted to develop something that would let me experiment with using local models for coding and also for text generation.
+
+As far as coding went, I didn't have much luck with the qwen3.5 models, but text generation worked well. I ultimately ended up removing the suggested title functionality since it was against Strava's Terms of Service.
 
 This app was developed with the help of OpenAI Codex.
 
